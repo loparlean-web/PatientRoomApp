@@ -11,7 +11,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import API from '../../api';
+import { supabase } from '../../supabase';
 
 export default function AdminEditRoom({ route, navigation }) {
   const { roomId } = route.params;
@@ -26,7 +26,20 @@ export default function AdminEditRoom({ route, navigation }) {
   useEffect(() => {
     (async () => {
       try {
-        const r = await API.getRoom(roomId);
+        const { data, error } = await supabase
+          .from('rooms')
+          .select('*')
+          .eq('id', roomId)
+          .single();
+
+        if (error) throw error;
+
+        const r = {
+          ...data,
+          number: data.room_number,
+          price: Number(data.price),
+        };
+
         setRoom(r);
         setPrice(String(r.price));
         setType(r.type);
@@ -38,7 +51,7 @@ export default function AdminEditRoom({ route, navigation }) {
       }
       setLoading(false);
     })();
-  }, [roomId]);
+  }, [roomId, navigation]);
 
   const handleSave = async () => {
     const numericPrice = Number(price);
@@ -52,7 +65,17 @@ export default function AdminEditRoom({ route, navigation }) {
 
     setSaving(true);
     try {
-      await API.adminUpdateRoom(roomId, { price: numericPrice, type, status });
+      const { error } = await supabase
+        .from('rooms')
+        .update({
+          price: numericPrice,
+          type,
+          status,
+        })
+        .eq('id', roomId);
+
+      if (error) throw error;
+
       Alert.alert('✅ Saved', `Room ${room.number} updated successfully.`, [
         { text: 'OK', onPress: () => navigation.goBack() },
       ]);
@@ -101,7 +124,7 @@ export default function AdminEditRoom({ route, navigation }) {
         <View style={s.headerCard}>
           <Text style={s.roomLabel}>Editing</Text>
           <Text style={s.roomNumber}>Room {room.number}</Text>
-          <Text style={s.roomId}>ID: {room.id}</Text>
+          <Text style={s.roomId}>ID: {room.id.slice(0, 8)}…</Text>
         </View>
 
         <Text style={s.label}>💰 Price per Day (₱) *</Text>
@@ -169,7 +192,11 @@ export default function AdminEditRoom({ route, navigation }) {
         </View>
 
         <TouchableOpacity
-          style={[s.btn, { backgroundColor: '#34C759' }, saving && { opacity: 0.6 }]}
+          style={[
+            s.btn,
+            { backgroundColor: '#34C759' },
+            saving && { opacity: 0.6 },
+          ]}
           onPress={handleSave}
           disabled={saving}
         >
@@ -196,7 +223,7 @@ export default function AdminEditRoom({ route, navigation }) {
           <Text style={s.btnT}>✖ Cancel</Text>
         </TouchableOpacity>
 
-        <Text style={s.footer}>💾 Data source: local API</Text>
+        <Text style={s.footer}>☁️ Data source: Supabase</Text>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -271,7 +298,12 @@ const s = StyleSheet.create({
     borderBottomColor: '#f2f2f2',
   },
   rowLabel: { color: '#666', fontSize: 13 },
-  rowValue: { fontWeight: '600', fontSize: 13, flexShrink: 1, textAlign: 'right' },
+  rowValue: {
+    fontWeight: '600',
+    fontSize: 13,
+    flexShrink: 1,
+    textAlign: 'right',
+  },
   btn: {
     padding: 16,
     borderRadius: 10,

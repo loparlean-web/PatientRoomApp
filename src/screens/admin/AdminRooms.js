@@ -9,22 +9,40 @@ import {
   Alert,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import API from '../../api';
+import { supabase } from '../../supabase';
 
 export default function AdminRooms({ navigation }) {
   const [rooms, setRooms] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
-      setRooms(await API.getRooms());
+      const { data, error } = await supabase
+        .from('rooms')
+        .select('*')
+        .order('room_number', { ascending: true });
+
+      if (error) throw error;
+
+      setRooms(
+        (data || []).map((r) => ({
+          ...r,
+          number: r.room_number,
+          price: Number(r.price),
+        }))
+      );
     } catch (e) {
       Alert.alert('Error', e.message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
-  };
+  }, []);
 
-  useFocusEffect(useCallback(() => { load(); }, []));
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
 
   const changeStatus = (room) => {
     Alert.alert(`Room ${room.number}`, 'Change status to:', [
@@ -37,7 +55,12 @@ export default function AdminRooms({ navigation }) {
 
   const update = async (id, status) => {
     try {
-      await API.adminSetRoomStatus(id, status);
+      const { error } = await supabase
+        .from('rooms')
+        .update({ status })
+        .eq('id', id);
+
+      if (error) throw error;
       await load();
     } catch (e) {
       Alert.alert('Error', e.message);
@@ -52,7 +75,8 @@ export default function AdminRooms({ navigation }) {
         { text: 'Cancel', style: 'cancel' },
         {
           text: '✏️ Edit Room',
-          onPress: () => navigation.navigate('AdminEditRoom', { roomId: room.id }),
+          onPress: () =>
+            navigation.navigate('AdminEditRoom', { roomId: room.id }),
         },
         { text: '🔄 Change Status', onPress: () => changeStatus(room) },
       ]
@@ -95,7 +119,7 @@ export default function AdminRooms({ navigation }) {
         )}
       />
 
-      <Text style={s.footer}>💾 Data source: local API</Text>
+      <Text style={s.footer}>☁️ Data source: Supabase</Text>
     </View>
   );
 }

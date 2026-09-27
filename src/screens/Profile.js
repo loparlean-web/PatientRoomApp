@@ -8,7 +8,6 @@ import {
   ScrollView,
 } from 'react-native';
 import { useAuth } from '../AuthContext';
-import API from '../api';
 
 export default function Profile() {
   const { user, logout } = useAuth();
@@ -20,25 +19,6 @@ export default function Profile() {
     ]);
   };
 
-  const resetDB = () => {
-    Alert.alert(
-      'Reset Database?',
-      'All data (users, reservations, payments) will be erased and restored to defaults, including the admin account.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reset',
-          style: 'destructive',
-          onPress: async () => {
-            await API.resetAll();
-            await logout();
-            Alert.alert('✅ Reset', 'Database reset to defaults.');
-          },
-        },
-      ]
-    );
-  };
-
   if (!user) {
     return (
       <View style={s.center}>
@@ -47,13 +27,17 @@ export default function Profile() {
     );
   }
 
+  // user_metadata is spread into the user object by AuthContext
+  const displayName =
+    user.full_name || user.fullName || user.username || 'Patient';
+
   return (
     <ScrollView contentContainerStyle={s.c}>
       <View style={s.header}>
         <View style={s.avatar}>
-          <Text style={s.avT}>{user.name?.[0]?.toUpperCase() || 'P'}</Text>
+          <Text style={s.avT}>{displayName[0]?.toUpperCase() || 'P'}</Text>
         </View>
-        <Text style={s.name}>{user.name}</Text>
+        <Text style={s.name}>{displayName}</Text>
         <Text style={s.uname}>@{user.username}</Text>
         <View
           style={[
@@ -69,10 +53,10 @@ export default function Profile() {
 
       <View style={s.card}>
         <Text style={s.secTitle}>Account Information</Text>
-        <Row label="User ID" value={user.id} />
+        <Row label="User ID" value={user.id?.slice(0, 12) + '…'} />
         <Row label="Role" value={user.role} />
         <Row label="Username" value={user.username} />
-        <Row label="Name" value={user.name} />
+        <Row label="Name" value={displayName} />
         <Row label="Email" value={user.email || '—'} />
         <Row label="Phone" value={user.phone || '—'} />
         <Row label="Age" value={user.age ? String(user.age) : '—'} />
@@ -87,14 +71,7 @@ export default function Profile() {
         <Text style={s.btnT}>🚪 Logout</Text>
       </TouchableOpacity>
 
-      <TouchableOpacity
-        style={[s.btn, { backgroundColor: '#8E8E93' }]}
-        onPress={resetDB}
-      >
-        <Text style={s.btnT}>🔄 Reset Database</Text>
-      </TouchableOpacity>
-
-      <Text style={s.footer}>💾 Data source: local API (AsyncStorage)</Text>
+      <Text style={s.footer}>☁️ Data source: Supabase</Text>
     </ScrollView>
   );
 }
@@ -131,7 +108,12 @@ const s = StyleSheet.create({
   patientTag: { backgroundColor: '#d4edda' },
   adminTag: { backgroundColor: '#FFD7D5' },
   roleT: { fontSize: 12, fontWeight: '700', color: '#333' },
-  card: { backgroundColor: '#fff', padding: 16, borderRadius: 12, marginBottom: 16 },
+  card: {
+    backgroundColor: '#fff',
+    padding: 16,
+    borderRadius: 12,
+    marginBottom: 16,
+  },
   secTitle: { fontSize: 15, fontWeight: '700', marginBottom: 12 },
   row: {
     flexDirection: 'row',

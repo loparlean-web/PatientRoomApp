@@ -10,26 +10,83 @@ import {
   RefreshControl,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import API from '../api';
-import { usePayment } from '../PaymentContext';
+import { supabase } from '../supabase';
+import { useAuth } from '../AuthContext';
 
 export default function MyRoom({ navigation }) {
-  const { reload: reloadPayments } = usePayment();
+  const { user } = useAuth();
   const [info, setInfo] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = useCallback(async () => {
+    if (!user) return;
     try {
-      const data = await API.checkoutInfo();
-      setInfo(data);
-      await reloadPayments();
+      // 1. Fetch active/pending reservation with its room
+      const { data: resvData, error: resvError } = await supabase
+        .from('reservations')
+        .select('*, room:rooms(*)')
+        .eq('user_id', user.id)
+        .in('status', ['pending', 'active'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (resvError) throw resvError;
+
+      if (!resvData) {
+        setInfo(null);
+        setLoading(false);
+        return;
+      }
+
+      // 2. Fetch all payments for this user
+      const { data: paymentsData, error: payError } = await supabase
+        .from('payments')
+        .select('*')
+        .eq('user_id', user.id);
+
+      if (payError) throw payError;
+
+      // 3. Compute totals
+      const room = resvData.room;
+      const checkInRaw = resvData.created_at;
+      const checkIn = new Date(checkInRaw);
+      const days = Math.max(
+        1,
+        Math.ceil((Date.now() - checkIn.getTime()) / (1000 * 60 * 60 * 24))
+      );
+      const dailyRate = Number(room.price);
+      const total = dailyRate * days;
+
+      const paid = (paymentsData || [])
+        .filter((p) => p.status === 'paid')
+        .reduce((sum, p) => sum + Number(p.amount), 0);
+
+      const balance = Math.max(0, total - paid);
+      const canCheckout = balance <= 0;
+
+      setInfo({
+        reservation: {
+          id: resvData.id,
+          checkIn: checkIn.toLocaleDateString(),
+          room: {
+            ...room,
+            number: room.room_number,
+            price: dailyRate,
+          },
+        },
+        total,
+        paid,
+        balance,
+        canCheckout,
+      });
     } catch (e) {
       console.warn('Load checkout info:', e.message);
     }
     setLoading(false);
-  }, [reloadPayments]);
+  }, [user]);
 
   useFocusEffect(
     useCallback(() => {
@@ -43,7 +100,6 @@ export default function MyRoom({ navigation }) {
     setRefreshing(false);
   };
 
-  // 💳 Go to bill
   const goToBill = () => navigation.navigate('Bill');
 
   // 🚪 Checkout / Discharge
@@ -56,10 +112,7 @@ export default function MyRoom({ navigation }) {
         `You still have an outstanding balance of ₱${info.balance.toFixed(2)}.\n\nYou must fully pay your hospital bill before you can check out.`,
         [
           { text: 'OK' },
-          {
-            text: 'Go to Bill',
-            onPress: goToBill,
-          },
+          { text: 'Go to Bill', onPress: goToBill },
         ]
       );
     }
@@ -75,12 +128,28 @@ export default function MyRoom({ navigation }) {
           onPress: async () => {
             setBusy(true);
             try {
-              const result = await API.checkoutRoom();
-              await load();
-              await reloadPayments();
+              // 1. Mark reservation completed
+              const { error: resvError } = await supabase
+                .from('reservations')
+                .update({ status: 'completed' })
+                .eq('id', info.reservation.id);
+
+              if (resvError) throw resvError;
+
+              // 2. Free the room
+              const { error: roomError } = await supabase
+                .from('rooms')
+                .update({ status: 'available' })
+                .eq('id', info.reservation.room.id);
+
+              if (roomError) throw roomError;
+
+              const roomNumber = info.reservation.room.number;
+
+              await load().catch(() => {});
               Alert.alert(
                 '✅ Discharged',
-                `You have successfully checked out from Room ${result.roomNumber}.\n\nThank you and get well soon!`,
+                `You have successfully checked out from Room ${roomNumber}.\n\nThank you and get well soon!`,
                 [{ text: 'OK' }]
               );
             } catch (e) {
@@ -106,9 +175,23 @@ export default function MyRoom({ navigation }) {
           onPress: async () => {
             setBusy(true);
             try {
-              await API.cancelReservation(info.reservation.id);
-              await load();
-              await reloadPayments();
+              // 1. Cancel reservation
+              const { error: resvError } = await supabase
+                .from('reservations')
+                .update({ status: 'cancelled' })
+                .eq('id', info.reservation.id);
+
+              if (resvError) throw resvError;
+
+              // 2. Free the room
+              const { error: roomError } = await supabase
+                .from('rooms')
+                .update({ status: 'available' })
+                .eq('id', info.reservation.room.id);
+
+              if (roomError) throw roomError;
+
+              await load().catch(() => {});
               Alert.alert('✅ Cancelled', 'Your reservation has been cancelled.');
             } catch (e) {
               Alert.alert('Error', e.message);
@@ -193,8 +276,11 @@ export default function MyRoom({ navigation }) {
       {/* Reservation Details */}
       <View style={s.card}>
         <Text style={s.cardTitle}>Reservation Details</Text>
-        <Row label="Reservation ID" value={reservation.id} />
-        <Row label="Room" value={`${reservation.room.number} (${reservation.room.type})`} />
+        <Row label="Reservation ID" value={reservation.id.slice(0, 8) + '…'} />
+        <Row
+          label="Room"
+          value={`${reservation.room.number} (${reservation.room.type})`}
+        />
         <Row
           label="Daily Rate"
           value={`₱${reservation.room.price.toFixed(2)}`}
@@ -208,7 +294,11 @@ export default function MyRoom({ navigation }) {
       <View style={s.card}>
         <Text style={s.cardTitle}>Bill Summary</Text>
         <Row label="Total Bill" value={`₱${total.toFixed(2)}`} />
-        <Row label="Amount Paid" value={`₱${paid.toFixed(2)}`} valueColor="#28a745" />
+        <Row
+          label="Amount Paid"
+          value={`₱${paid.toFixed(2)}`}
+          valueColor="#28a745"
+        />
         <View style={s.divider} />
         <Row
           label="Outstanding Balance"
@@ -247,9 +337,7 @@ export default function MyRoom({ navigation }) {
           disabled={busy}
         >
           <Text style={s.btnT}>💳 Go to Bill & Pay Balance</Text>
-          <Text style={s.btnSubT}>
-            Outstanding: ₱{balance.toFixed(2)}
-          </Text>
+          <Text style={s.btnSubT}>Outstanding: ₱{balance.toFixed(2)}</Text>
         </TouchableOpacity>
       )}
 
@@ -290,7 +378,7 @@ export default function MyRoom({ navigation }) {
         </TouchableOpacity>
       )}
 
-      <Text style={s.footer}>💾 Data source: local API</Text>
+      <Text style={s.footer}>☁️ Data source: Supabase</Text>
     </ScrollView>
   );
 }
@@ -446,12 +534,7 @@ const s = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   btnT: { color: '#fff', fontWeight: '700', fontSize: 15 },
-  btnSubT: {
-    color: '#fff',
-    fontSize: 12,
-    marginTop: 4,
-    opacity: 0.9,
-  },
+  btnSubT: { color: '#fff', fontSize: 12, marginTop: 4, opacity: 0.9 },
   footer: {
     textAlign: 'center',
     color: '#999',

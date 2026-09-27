@@ -7,22 +7,40 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import API from '../../api';
+import { supabase } from '../../supabase';
 
 export default function AdminUsers() {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
-      setUsers(await API.adminGetUsers());
-    } catch (e) {
-      console.warn(e.message);
-    }
-    setLoading(false);
-  };
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('role', 'patient')
+        .order('created_at', { ascending: false });
 
-  useFocusEffect(useCallback(() => { load(); }, []));
+      if (error) throw error;
+
+      setUsers(
+        (data || []).map((u) => ({
+          ...u,
+          name: u.full_name || u.username || 'Patient',
+        }))
+      );
+    } catch (e) {
+      console.warn('AdminUsers load:', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
 
   if (loading) {
     return (
@@ -64,27 +82,36 @@ export default function AdminUsers() {
             <View style={{ flex: 1 }}>
               <Text style={s.name}>{item.name}</Text>
               <Text style={s.meta}>
-                @{item.username} · {item.id}
+                @{item.username} · {item.id.slice(0, 8)}…
               </Text>
-              <Text style={s.meta}>{item.email || 'no email'}</Text>
               <Text style={s.meta}>
-                📞 {item.phone || 'no phone'} · 🎂 {item.age || '—'}
+                {item.phone || 'no phone'} · 🎂 {item.age || '—'}
               </Text>
             </View>
           </View>
         )}
       />
 
-      <Text style={s.footer}>💾 Data source: local API</Text>
+      <Text style={s.footer}>☁️ Data source: Supabase</Text>
     </View>
   );
 }
 
 const s = StyleSheet.create({
   c: { flex: 1, padding: 16, backgroundColor: '#f5f7fa' },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  center: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
   emptyT: { fontSize: 16, fontWeight: '600', marginTop: 12 },
-  emptySub: { color: '#888', marginTop: 6, textAlign: 'center', fontSize: 12 },
+  emptySub: {
+    color: '#888',
+    marginTop: 6,
+    textAlign: 'center',
+    fontSize: 12,
+  },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',

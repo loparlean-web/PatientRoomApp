@@ -1,9 +1,59 @@
-import React from 'react';
-import { View, Text, FlatList, StyleSheet } from 'react-native';
-import { usePayment } from '../PaymentContext';
+import React, { useState, useCallback } from 'react';
+import {
+  View,
+  Text,
+  FlatList,
+  StyleSheet,
+  ActivityIndicator,
+  RefreshControl,
+} from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
+import { supabase } from '../supabase';
+import { useAuth } from '../AuthContext';
 
 export default function History() {
-  const { payments } = usePayment();
+  const { user } = useAuth();
+  const [payments, setPayments] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!user) return;
+    try {
+      const { data, error } = await supabase
+        .from('payments')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setPayments(data || []);
+    } catch (e) {
+      console.warn('History load:', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
+
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  };
+
+  if (loading) {
+    return (
+      <View style={s.center}>
+        <ActivityIndicator size="large" color="#007AFF" />
+      </View>
+    );
+  }
 
   if (payments.length === 0) {
     return (
@@ -20,21 +70,33 @@ export default function History() {
       <FlatList
         data={payments}
         keyExtractor={(i) => i.id}
-        renderItem={({ item }) => (
-          <View style={s.card}>
-            <View style={{ flex: 1 }}>
-              <Text style={s.id}>{item.id}</Text>
-              <Text style={s.meta}>{new Date(item.timestamp).toLocaleString()}</Text>
-              <Text style={s.meta}>{item.method}</Text>
-            </View>
-            <View style={{ alignItems: 'flex-end' }}>
-              <Text style={s.amt}>₱{item.amount.toFixed(2)}</Text>
-              <View style={[s.badge, item.status === 'successful' ? s.ok : s.fail]}>
-                <Text style={s.badgeT}>{item.status.toUpperCase()}</Text>
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+        renderItem={({ item }) => {
+          const isPaid = item.status === 'paid';
+          return (
+            <View style={s.card}>
+              <View style={{ flex: 1 }}>
+                <Text style={s.id}>#{item.id.slice(0, 8).toUpperCase()}</Text>
+                <Text style={s.meta}>
+                  {new Date(item.created_at).toLocaleString()}
+                </Text>
+                <Text style={s.meta}>{item.method || '—'}</Text>
+              </View>
+              <View style={{ alignItems: 'flex-end' }}>
+                <Text style={s.amt}>
+                  ₱{Number(item.amount).toFixed(2)}
+                </Text>
+                <View style={[s.badge, isPaid ? s.ok : s.fail]}>
+                  <Text style={s.badgeT}>
+                    {isPaid ? 'PAID' : (item.status || '').toUpperCase()}
+                  </Text>
+                </View>
               </View>
             </View>
-          </View>
-        )}
+          );
+        }}
       />
     </View>
   );
@@ -56,7 +118,12 @@ const s = StyleSheet.create({
   id: { fontWeight: '600', fontSize: 12 },
   meta: { color: '#888', fontSize: 11, marginTop: 2 },
   amt: { fontWeight: '700', fontSize: 16 },
-  badge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10, marginTop: 6 },
+  badge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
+    marginTop: 6,
+  },
   ok: { backgroundColor: '#d4edda' },
   fail: { backgroundColor: '#f8d7da' },
   badgeT: { fontSize: 10, fontWeight: '700' },

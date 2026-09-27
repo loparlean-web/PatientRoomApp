@@ -9,18 +9,18 @@ import {
   ScrollView,
   TextInput,
 } from 'react-native';
-import { usePayment } from '../PaymentContext';
+import { supabase } from '../supabase';
+import { useAuth } from '../AuthContext';
 
 export default function Payment({ route, navigation }) {
   const { balance } = route.params;
-  const { pay } = usePayment();
+  const { user } = useAuth();
 
-  const [mode, setMode] = useState('full'); // 'full' | 'half' | 'custom'
+  const [mode, setMode] = useState('full');
   const [customAmount, setCustomAmount] = useState('');
   const [method, setMethod] = useState('NFC');
   const [busy, setBusy] = useState(false);
 
-  // Compute the actual amount to pay
   const computedAmount = (() => {
     if (mode === 'full') return balance;
     if (mode === 'half') return balance / 2;
@@ -33,7 +33,6 @@ export default function Payment({ route, navigation }) {
 
   const remainingAfter = Math.max(0, balance - computedAmount);
 
-  // Validate custom amount
   const customError = (() => {
     if (mode !== 'custom') return null;
     if (!customAmount) return null;
@@ -49,7 +48,6 @@ export default function Payment({ route, navigation }) {
     !customError &&
     !busy;
 
-  // Confirm + pay
   const handlePay = () => {
     if (!canPay) return;
 
@@ -63,12 +61,24 @@ export default function Payment({ route, navigation }) {
           onPress: async () => {
             setBusy(true);
             try {
-              const txn = await pay(computedAmount, method);
+              const { data, error } = await supabase
+                .from('payments')
+                .insert([
+                  {
+                    user_id: user.id,
+                    amount: computedAmount,
+                    status: 'paid',
+                    method: method,
+                  },
+                ])
+                .select()
+                .single();
+
+              if (error) throw error;
+
               Alert.alert(
-                txn.status === 'successful'
-                  ? '✅ Payment Successful'
-                  : '❌ Payment Failed',
-                `Amount: ₱${computedAmount.toFixed(2)}\nTransaction: ${txn.id}\n\nRemaining: ₱${remainingAfter.toFixed(2)}`,
+                '✅ Payment Successful',
+                `Amount: ₱${computedAmount.toFixed(2)}\nTransaction: ${data.id.slice(0, 8)}\n\nRemaining: ₱${remainingAfter.toFixed(2)}`,
                 [
                   {
                     text: 'OK',
@@ -78,7 +88,7 @@ export default function Payment({ route, navigation }) {
                 ]
               );
             } catch (e) {
-              Alert.alert('Error', e.message);
+              Alert.alert('Payment Failed', e.message);
             }
             setBusy(false);
           },
@@ -100,13 +110,11 @@ export default function Payment({ route, navigation }) {
     <ScrollView contentContainerStyle={s.c}>
       <Text style={s.title}>💳 Payment</Text>
 
-      {/* Amount Due */}
       <View style={s.amountCard}>
         <Text style={s.amountLabel}>Amount Due</Text>
         <Text style={s.amountValue}>₱{balance.toFixed(2)}</Text>
       </View>
 
-      {/* Payment Mode */}
       <Text style={s.sectionTitle}>Choose Payment Option</Text>
 
       <OptionCard
@@ -136,7 +144,6 @@ export default function Payment({ route, navigation }) {
         color="#007AFF"
       />
 
-      {/* Custom amount input */}
       {mode === 'custom' && (
         <View style={s.customWrap}>
           <Text style={s.label}>Enter Amount (₱)</Text>
@@ -151,22 +158,29 @@ export default function Payment({ route, navigation }) {
           {customError ? (
             <Text style={s.errorText}>{customError}</Text>
           ) : (
-            <Text style={s.hintText}>
-              Maximum: ₱{balance.toFixed(2)}
-            </Text>
+            <Text style={s.hintText}>Maximum: ₱{balance.toFixed(2)}</Text>
           )}
         </View>
       )}
 
-      {/* Summary */}
       <View style={s.summaryCard}>
         <Text style={s.summaryTitle}>Payment Summary</Text>
-        <Row label="Option" value={
-          mode === 'full' ? 'Full Payment' :
-          mode === 'half' ? 'Half Payment (50%)' :
-          'Custom Amount'
-        } />
-        <Row label="Amount to Pay" value={`₱${computedAmount.toFixed(2)}`} valueColor="#34C759" bold />
+        <Row
+          label="Option"
+          value={
+            mode === 'full'
+              ? 'Full Payment'
+              : mode === 'half'
+              ? 'Half Payment (50%)'
+              : 'Custom Amount'
+          }
+        />
+        <Row
+          label="Amount to Pay"
+          value={`₱${computedAmount.toFixed(2)}`}
+          valueColor="#34C759"
+          bold
+        />
         <Row label="Current Balance" value={`₱${balance.toFixed(2)}`} />
         <View style={s.divider} />
         <Row
@@ -176,13 +190,10 @@ export default function Payment({ route, navigation }) {
           bold
         />
         {remainingAfter <= 0 && (
-          <Text style={s.fullyPaidHint}>
-            🎉 This will fully pay your bill!
-          </Text>
+          <Text style={s.fullyPaidHint}>🎉 This will fully pay your bill!</Text>
         )}
       </View>
 
-      {/* Payment Method */}
       <Text style={s.sectionTitle}>Payment Method</Text>
       {['NFC', 'Credit Card', 'Cash'].map((m) => (
         <TouchableOpacity
@@ -192,13 +203,16 @@ export default function Payment({ route, navigation }) {
           disabled={busy}
         >
           <Text style={[s.methodT, method === m && s.methodTOn]}>
-            {m === 'NFC' ? '📱 NFC' : m === 'Credit Card' ? '💳 Credit Card' : '💵 Cash'}
+            {m === 'NFC'
+              ? '📱 NFC'
+              : m === 'Credit Card'
+              ? '💳 Credit Card'
+              : '💵 Cash'}
           </Text>
           {method === m && <Text style={s.checkmark}>✓</Text>}
         </TouchableOpacity>
       ))}
 
-      {/* Pay Button */}
       <TouchableOpacity
         style={[s.payBtn, !canPay && s.payBtnDisabled]}
         onPress={handlePay}
@@ -211,12 +225,11 @@ export default function Payment({ route, navigation }) {
         </Text>
       </TouchableOpacity>
 
-      <Text style={s.footer}>💾 Data source: local API</Text>
+      <Text style={s.footer}>☁️ Data source: Supabase</Text>
     </ScrollView>
   );
 }
 
-// ---------- Option Card ----------
 const OptionCard = ({ icon, title, subtitle, selected, onPress, color }) => (
   <TouchableOpacity
     style={[
@@ -244,7 +257,6 @@ const OptionCard = ({ icon, title, subtitle, selected, onPress, color }) => (
   </TouchableOpacity>
 );
 
-// ---------- Row ----------
 const Row = ({ label, value, valueColor, bold }) => (
   <View style={s.row}>
     <Text style={[s.rowLabel, bold && { fontWeight: '700' }]}>{label}</Text>
@@ -260,7 +272,6 @@ const Row = ({ label, value, valueColor, bold }) => (
   </View>
 );
 
-// ---------- Styles ----------
 const s = StyleSheet.create({
   c: { padding: 20, backgroundColor: '#f5f7fa', flexGrow: 1 },
   center: {
@@ -273,7 +284,6 @@ const s = StyleSheet.create({
 
   title: { fontSize: 24, fontWeight: 'bold', marginBottom: 20 },
 
-  // Amount card
   amountCard: {
     backgroundColor: '#007AFF',
     padding: 24,
@@ -289,7 +299,6 @@ const s = StyleSheet.create({
     marginTop: 6,
   },
 
-  // Section title
   sectionTitle: {
     fontSize: 15,
     fontWeight: '700',
@@ -298,7 +307,6 @@ const s = StyleSheet.create({
     marginBottom: 12,
   },
 
-  // Option card
   optionCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -330,7 +338,6 @@ const s = StyleSheet.create({
   },
   radioCheck: { color: '#fff', fontWeight: 'bold', fontSize: 12 },
 
-  // Custom amount
   customWrap: { marginTop: 4, marginBottom: 8 },
   label: {
     fontSize: 13,
@@ -352,7 +359,6 @@ const s = StyleSheet.create({
   errorText: { color: '#FF3B30', fontSize: 12, marginTop: 6 },
   hintText: { color: '#888', fontSize: 12, marginTop: 6 },
 
-  // Summary card
   summaryCard: {
     backgroundColor: '#fff',
     padding: 16,
@@ -382,7 +388,6 @@ const s = StyleSheet.create({
     textAlign: 'center',
   },
 
-  // Payment method
   method: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -399,7 +404,6 @@ const s = StyleSheet.create({
   methodTOn: { fontWeight: '700', color: '#007AFF' },
   checkmark: { color: '#007AFF', fontWeight: 'bold', fontSize: 16 },
 
-  // Pay button
   payBtn: {
     backgroundColor: '#34C759',
     padding: 18,

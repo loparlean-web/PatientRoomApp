@@ -9,8 +9,18 @@ import {
   Alert,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import API from '../api';
+import { supabase } from '../supabase';
 import { useAuth } from '../AuthContext';
+
+// Pure helper — no DB
+const generateUid = () => {
+  const hex = '0123456789ABCDEF';
+  let uid = '';
+  for (let i = 0; i < 10; i++) {
+    uid += hex[Math.floor(Math.random() * 16)];
+  }
+  return uid;
+};
 
 export default function NfcScan() {
   const { user, refresh } = useAuth();
@@ -20,18 +30,28 @@ export default function NfcScan() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  const loadMyCard = useCallback(async () => {
+    if (!user) return;
+    try {
+      const { data, error } = await supabase
+        .from('nfc_cards')
+        .select('uid')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      if (error) throw error;
+      setMyUid(data?.uid || null);
+    } catch (e) {
+      console.warn('NFC load:', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
+
   useFocusEffect(
     useCallback(() => {
-      (async () => {
-        try {
-          const uid = await API.nfcGetMyCard();
-          setMyUid(uid);
-        } catch (e) {
-          console.warn('NFC load:', e.message);
-        }
-        setLoading(false);
-      })();
-    }, [])
+      loadMyCard();
+    }, [loadMyCard])
   );
 
   const handleRegister = () => {
@@ -45,8 +65,14 @@ export default function NfcScan() {
           onPress: async () => {
             setRegistering(true);
             try {
-              const newUid = API.nfcGenerateUid();
-              await API.nfcRegister(newUid);
+              const newUid = generateUid();
+
+              const { error } = await supabase
+                .from('nfc_cards')
+                .insert([{ uid: newUid, user_id: user.id }]);
+
+              if (error) throw error;
+
               setMyUid(newUid);
               await refresh();
               Alert.alert(
@@ -64,6 +90,38 @@ export default function NfcScan() {
     );
   };
 
+  const scanCard = async (uid) => {
+    // Look up the card and join the patient profile
+    const { data, error } = await supabase
+      .from('nfc_cards')
+      .select(`
+        uid,
+        user_id,
+        profile:profiles (id, username, full_name, age, blood_type, phone)
+      `)
+      .eq('uid', uid)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) return { verified: false, nfcUid: uid };
+
+    return {
+      verified: true,
+      nfcUid: uid,
+      patient: data.profile
+        ? {
+            id: data.profile.id,
+            name: data.profile.full_name || data.profile.username,
+            username: data.profile.username,
+            age: data.profile.age,
+            bloodType: data.profile.blood_type,
+            phone: data.profile.phone,
+            email: null,
+          }
+        : null,
+    };
+  };
+
   const handleScan = async () => {
     if (!myUid) {
       return Alert.alert(
@@ -74,9 +132,8 @@ export default function NfcScan() {
 
     setScanning(true);
     setResult(null);
-
     try {
-      const res = await API.scanNfc(myUid);
+      const res = await scanCard(myUid);
       setResult(res);
     } catch (e) {
       Alert.alert('Scan Error', e.message);
@@ -95,7 +152,13 @@ export default function NfcScan() {
           style: 'destructive',
           onPress: async () => {
             try {
-              await API.nfcUnregister();
+              const { error } = await supabase
+                .from('nfc_cards')
+                .delete()
+                .eq('user_id', user.id);
+
+              if (error) throw error;
+
               setMyUid(null);
               setResult(null);
               await refresh();
@@ -113,8 +176,8 @@ export default function NfcScan() {
     setScanning(true);
     setResult(null);
     try {
-      const randomUid = API.nfcGenerateUid();
-      const res = await API.scanNfc(randomUid);
+      const randomUid = generateUid();
+      const res = await scanCard(randomUid);
       setResult(res);
     } catch (e) {
       Alert.alert('Error', e.message);
@@ -152,14 +215,20 @@ export default function NfcScan() {
             <View style={[s.badge, s.badgeWarn]}>
               <Text style={s.badgeText}>⚠️ NOT REGISTERED</Text>
             </View>
-            <Text style={s.uidLabel}>No NFC card linked to your account.</Text>
+            <Text style={s.uidLabel}>
+              No NFC card linked to your account.
+            </Text>
           </>
         )}
       </View>
 
       {!myUid ? (
         <TouchableOpacity
-          style={[s.btn, { backgroundColor: '#007AFF' }, registering && { opacity: 0.6 }]}
+          style={[
+            s.btn,
+            { backgroundColor: '#007AFF' },
+            registering && { opacity: 0.6 },
+          ]}
           onPress={handleRegister}
           disabled={registering}
         >
@@ -172,7 +241,11 @@ export default function NfcScan() {
       ) : (
         <>
           <TouchableOpacity
-            style={[s.btn, { backgroundColor: '#34C759' }, scanning && { opacity: 0.6 }]}
+            style={[
+              s.btn,
+              { backgroundColor: '#34C759' },
+              scanning && { opacity: 0.6 },
+            ]}
             onPress={handleScan}
             disabled={scanning}
           >
@@ -202,22 +275,35 @@ export default function NfcScan() {
       )}
 
       {result && (
-        <View style={[s.resultCard, result.verified ? s.verified : s.unverified]}>
+        <View
+          style={[
+            s.resultCard,
+            result.verified ? s.verified : s.unverified,
+          ]}
+        >
           <Text style={s.resultBadge}>
-            {result.verified ? '✅ VERIFIED PATIENT' : '❌ UNREGISTERED CARD'}
+            {result.verified
+              ? '✅ VERIFIED PATIENT'
+              : '❌ UNREGISTERED CARD'}
           </Text>
           <Text style={s.resultUid}>NFC UID: {result.nfcUid}</Text>
 
           {result.verified && result.patient ? (
             <>
-              <Row label="Patient ID" value={result.patient.id} />
+              <Row
+                label="Patient ID"
+                value={result.patient.id.slice(0, 8) + '…'}
+              />
               <Row label="Name" value={result.patient.name} />
               <Row label="Username" value={`@${result.patient.username}`} />
               <Row
                 label="Age"
                 value={result.patient.age ? String(result.patient.age) : '—'}
               />
-              <Row label="Blood Type" value={result.patient.bloodType || '—'} />
+              <Row
+                label="Blood Type"
+                value={result.patient.bloodType || '—'}
+              />
               <Row label="Email" value={result.patient.email || '—'} />
               <Row label="Phone" value={result.patient.phone || '—'} />
             </>
@@ -227,13 +313,16 @@ export default function NfcScan() {
             </Text>
           )}
 
-          <TouchableOpacity style={s.closeBtn} onPress={() => setResult(null)}>
+          <TouchableOpacity
+            style={s.closeBtn}
+            onPress={() => setResult(null)}
+          >
             <Text style={s.closeBtnT}>✖ Close Result</Text>
           </TouchableOpacity>
         </View>
       )}
 
-      <Text style={s.footer}>💾 Data source: local API (AsyncStorage)</Text>
+      <Text style={s.footer}>☁️ Data source: Supabase</Text>
     </ScrollView>
   );
 }
@@ -276,7 +365,12 @@ const s = StyleSheet.create({
     marginVertical: 6,
   },
   uidLabel: { color: '#666', fontSize: 12, textAlign: 'center' },
-  btn: { padding: 16, borderRadius: 10, marginBottom: 10, alignItems: 'center' },
+  btn: {
+    padding: 16,
+    borderRadius: 10,
+    marginBottom: 10,
+    alignItems: 'center',
+  },
   btnT: { color: '#fff', fontWeight: '700', fontSize: 15 },
   resultCard: { marginTop: 20, padding: 20, borderRadius: 12, borderWidth: 2 },
   verified: { backgroundColor: '#d4edda', borderColor: '#28a745' },
@@ -284,7 +378,11 @@ const s = StyleSheet.create({
   resultBadge: { fontWeight: '700', marginBottom: 10, fontSize: 13 },
   resultUid: { fontSize: 12, color: '#555', marginBottom: 14 },
   unverifiedText: { color: '#721c24', marginTop: 8, lineHeight: 20 },
-  row: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+  },
   rl: { color: '#444', fontSize: 13 },
   rv: { fontWeight: '600', fontSize: 13, flexShrink: 1, textAlign: 'right' },
   closeBtn: {

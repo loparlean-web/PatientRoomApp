@@ -1,30 +1,78 @@
+// src/AuthContext.js
 import React, { createContext, useState, useContext, useEffect } from 'react';
-import API from './api';
+import { supabase } from './supabase';
 
 const Ctx = createContext();
+
+const formatEmail = (username) => `${username.toLowerCase().trim()}@patientroom.local`;
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Fetch profile row and merge with auth user
+  const buildUser = async (sbUser) => {
+    // 1. Start with metadata
+    const base = {
+      id: sbUser.id,
+      email: sbUser.email,
+      username: sbUser.user_metadata?.username || sbUser.email.split('@')[0],
+      role: sbUser.user_metadata?.role || 'patient',
+      ...sbUser.user_metadata,
+    };
+
+    // 2. Override with the freshest role from the profiles table
+    try {
+      const { data: profile, error } = await supabase
+        .from('profiles')
+        .select('role, full_name, username')
+        .eq('id', sbUser.id)
+        .maybeSingle();
+
+      if (!error && profile) {
+        base.role = profile.role || base.role;
+        base.username = profile.username || base.username;
+        if (profile.full_name) base.full_name = profile.full_name;
+      }
+    } catch (e) {
+      console.warn('Profile fetch:', e.message);
+    }
+
+    return base;
+  };
+
   useEffect(() => {
-    (async () => {
-      try {
-        await API.init(); // 👈 may migration na
-        const me = await API.me();
-        if (me) setUser(me);
-      } catch (e) {
-        console.warn('Init:', e.message);
+    const init = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        setUser(await buildUser(session.user));
       }
       setLoading(false);
-    })();
+    };
+
+    init();
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if (session?.user) {
+          setUser(await buildUser(session.user));
+        } else {
+          setUser(null);
+        }
+        setLoading(false);
+      }
+    );
+
+    return () => authListener.subscription.unsubscribe();
   }, []);
 
   const login = async (username, password) => {
     try {
-      const data = await API.login(username, password);
-      const me = await API.me(); // 👈 re-fetch para sigurado
-      setUser(me || data.user);
+      const { error } = await supabase.auth.signInWithPassword({
+        email: formatEmail(username),
+        password,
+      });
+      if (error) throw error;
       return true;
     } catch (e) {
       console.warn('Login:', e.message);
@@ -34,9 +82,19 @@ export const AuthProvider = ({ children }) => {
 
   const register = async (payload) => {
     try {
-      const data = await API.register(payload);
-      const me = await API.me();
-      setUser(me || data.user);
+      const { error } = await supabase.auth.signUp({
+        email: formatEmail(payload.username),
+        password: payload.password,
+        options: {
+          data: {
+            username: payload.username,
+            role: payload.role || 'patient',
+            full_name: payload.fullName || '',
+            ...payload,
+          },
+        },
+      });
+      if (error) throw error;
       return true;
     } catch (e) {
       console.warn('Register:', e.message);
@@ -45,18 +103,24 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = async () => {
-    await API.logout();
-    setUser(null);
+    await supabase.auth.signOut();
   };
 
   const updateProfile = async (data) => {
-    const u = await API.updateProfile(data);
-    setUser(u);
+    try {
+      const { data: updatedUser, error } = await supabase.auth.updateUser({
+        data,
+      });
+      if (error) throw error;
+      setUser(await buildUser(updatedUser.user));
+    } catch (e) {
+      console.warn('Update Profile:', e.message);
+    }
   };
 
   const refresh = async () => {
-    const me = await API.me();
-    if (me) setUser(me);
+    const { data: { user: sbUser } } = await supabase.auth.getUser();
+    if (sbUser) setUser(await buildUser(sbUser));
   };
 
   return (

@@ -9,47 +9,96 @@ import {
   RefreshControl,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { usePayment } from '../PaymentContext';
+import { supabase } from '../supabase';
+import { useAuth } from '../AuthContext';
 
 export default function Bill({ navigation }) {
-  const { bill, payments, reload } = usePayment();
+  const { user } = useAuth();
+  const [bill, setBill] = useState({
+    roomCharges: 0,
+    services: 0,
+    total: 0,
+    paid: 0,
+  });
+  const [payments, setPayments] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  // Compute values
-  const roomCharges = bill.roomCharges || 0;
-  const services = bill.services || 0;
-  const total = bill.total || 0;
-  const paid = bill.paid || 0;
-  const balance = total - paid;
+  const load = useCallback(async () => {
+    if (!user) return;
+    try {
+      // 1. Fetch active reservation + room (to compute room charges)
+      const { data: resvData, error: resvError } = await supabase
+        .from('reservations')
+        .select('*, room:rooms(*)')
+        .eq('user_id', user.id)
+        .in('status', ['pending', 'active'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-  const isFullyPaid = balance <= 0;
-  const isPartiallyPaid = paid > 0 && balance > 0;
+      if (resvError) throw resvError;
 
-  // 🔄 Reload bill on screen focus
+      // 2. Fetch all payments for this user
+      const { data: paymentsData, error: payError } = await supabase
+        .from('payments')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (payError) throw payError;
+
+      const list = paymentsData || [];
+      setPayments(list);
+
+      // 3. Compute bill
+      let roomCharges = 0;
+      if (resvData?.room) {
+        const checkIn = new Date(resvData.created_at);
+        const days = Math.max(
+          1,
+          Math.ceil((Date.now() - checkIn.getTime()) / (1000 * 60 * 60 * 24))
+        );
+        roomCharges = Number(resvData.room.price) * days;
+      }
+
+      const services = 0; // No services table yet — extend later if needed
+      const total = roomCharges + services;
+      const paid = list
+        .filter((p) => p.status === 'paid')
+        .reduce((sum, p) => sum + Number(p.amount), 0);
+
+      setBill({ roomCharges, services, total, paid });
+    } catch (e) {
+      console.warn('Bill load:', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [user]);
+
   useFocusEffect(
     useCallback(() => {
-      (async () => {
-        try {
-          await reload();
-        } catch (e) {
-          console.warn('Bill reload:', e.message);
-        }
-        setLoading(false);
-      })();
-    }, [reload])
+      load();
+    }, [load])
   );
 
-  // Pull-to-refresh
   const onRefresh = async () => {
     setRefreshing(true);
-    await reload();
+    await load();
     setRefreshing(false);
   };
 
-  // 💳 Go to payment
+  const roomCharges = bill.roomCharges;
+  const services = bill.services;
+  const total = bill.total;
+  const paid = bill.paid;
+  const balance = Math.max(0, total - paid);
+
+  const isFullyPaid = balance <= 0 && total > 0;
+  const isPartiallyPaid = paid > 0 && balance > 0;
+
   const goToPayment = () => {
-    if (isFullyPaid) return;
+    if (isFullyPaid || balance <= 0) return;
     navigation.navigate('Payment', { balance });
   };
 
@@ -106,23 +155,21 @@ export default function Bill({ navigation }) {
       </View>
 
       {/* Fully Paid Card */}
-        {isFullyPaid && (
-          <View style={s.paidCard}>
-            <Text style={s.paidIcon}>🎉</Text>
-            <Text style={s.paidTitle}>Fully Paid</Text>
-            <Text style={s.paidText}>
-              You have no outstanding balance. Thank you!
-            </Text>
-            <TouchableOpacity
-              style={s.dischargeBtn}
-              onPress={() => navigation.navigate('Main', { screen: 'MyRoom' })}
-            >
-              <Text style={s.dischargeBtnT}>
-                🚪 Proceed to Discharge
-              </Text>
-            </TouchableOpacity>
-          </View>
-        )}
+      {isFullyPaid && (
+        <View style={s.paidCard}>
+          <Text style={s.paidIcon}>🎉</Text>
+          <Text style={s.paidTitle}>Fully Paid</Text>
+          <Text style={s.paidText}>
+            You have no outstanding balance. Thank you!
+          </Text>
+          <TouchableOpacity
+            style={s.dischargeBtn}
+            onPress={() => navigation.navigate('Main', { screen: 'MyRoom' })}
+          >
+            <Text style={s.dischargeBtnT}>🚪 Proceed to Discharge</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Partial Paid Card */}
       {isPartiallyPaid && (
@@ -154,7 +201,7 @@ export default function Bill({ navigation }) {
         </View>
       )}
 
-      {/* Always show history */}
+      {/* History */}
       <TouchableOpacity
         style={[s.btn, s.btnGrey]}
         onPress={() => navigation.navigate('History')}
@@ -174,7 +221,7 @@ export default function Bill({ navigation }) {
         </Text>
       </TouchableOpacity>
 
-      <Text style={s.footer}>💾 Data source: local API</Text>
+      <Text style={s.footer}>☁️ Data source: Supabase</Text>
     </ScrollView>
   );
 }
@@ -243,7 +290,6 @@ const s = StyleSheet.create({
   value: { fontWeight: '600', fontSize: 14 },
   divider: { height: 1, backgroundColor: '#eee', marginVertical: 8 },
 
-  // Fully paid
   paidCard: {
     backgroundColor: '#d4edda',
     padding: 24,
@@ -267,7 +313,6 @@ const s = StyleSheet.create({
     textAlign: 'center',
   },
 
-  // Partial paid
   partialCard: {
     backgroundColor: '#fff3cd',
     padding: 20,
@@ -289,7 +334,6 @@ const s = StyleSheet.create({
     marginTop: 4,
   },
 
-  // Buttons
   btn: {
     padding: 18,
     borderRadius: 10,
@@ -334,15 +378,15 @@ const s = StyleSheet.create({
     marginTop: 12,
   },
   dischargeBtn: {
-  marginTop: 14,
-  paddingVertical: 12,
-  paddingHorizontal: 20,
-  backgroundColor: '#155724',
-  borderRadius: 8,
-},
-dischargeBtnT: {
-  color: '#fff',
-  fontWeight: '700',
-  fontSize: 14,
-},
+    marginTop: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    backgroundColor: '#155724',
+    borderRadius: 8,
+  },
+  dischargeBtnT: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 14,
+  },
 });

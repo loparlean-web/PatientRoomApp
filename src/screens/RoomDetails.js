@@ -9,30 +9,66 @@ import {
   ScrollView,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import API from '../api';
+import { supabase } from '../supabase';
+import { useAuth } from '../AuthContext';
 
 export default function RoomDetails({ route, navigation }) {
   const { roomId } = route.params;
+  const { user } = useAuth();
   const [room, setRoom] = useState(null);
   const [reservation, setReservation] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
+    if (!user) return;
     try {
-      const [r, resv] = await Promise.all([
-        API.getRoom(roomId),
-        API.getCurrentReservation(),
-      ]);
-      setRoom(r);
-      setReservation(resv);
+      // 1. Fetch the specific room
+      const { data: roomData, error: roomError } = await supabase
+        .from('rooms')
+        .select('*')
+        .eq('id', roomId)
+        .single();
+
+      if (roomError) throw roomError;
+
+      // 2. Fetch the user's active/pending reservation (newest only)
+      const { data: resvData, error: resvError } = await supabase
+        .from('reservations')
+        .select('*, room:rooms(*)')
+        .eq('user_id', user.id)
+        .in('status', ['pending', 'active'])
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (resvError) throw resvError;
+
+      setRoom({
+        ...roomData,
+        number: roomData.room_number,
+        price: Number(roomData.price),
+      });
+
+      if (resvData) {
+        setReservation({
+          ...resvData,
+          room: {
+            ...resvData.room,
+            number: resvData.room.room_number,
+            price: Number(resvData.room.price),
+          },
+        });
+      } else {
+        setReservation(null);
+      }
     } catch (e) {
-      Alert.alert('Error', e.message, [
-        { text: 'OK', onPress: () => navigation.goBack() },
-      ]);
+      // Silent — no popup. Mutation handlers will show their own result.
+      console.warn('RoomDetails load error:', e.message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
-  }, [roomId, navigation]);
+  }, [roomId, user]);
 
   useFocusEffect(
     useCallback(() => {
@@ -65,20 +101,38 @@ export default function RoomDetails({ route, navigation }) {
           onPress: async () => {
             setBusy(true);
             try {
-              await API.reserveRoom(room.id);
-              await load();
-              Alert.alert(
-                '✅ Reserved!',
-                `Room ${room.number} is now yours.`,
-                [
-                  { text: 'OK', onPress: () => navigation.goBack() },
+              // 1. Insert reservation
+              const { error: resvError } = await supabase
+                .from('reservations')
+                .insert([
                   {
-                    text: 'View My Room',
-                    onPress: () =>
-                      navigation.navigate('Main', { screen: 'MyRoom' }),
+                    user_id: user.id,
+                    room_id: room.id,
+                    status: 'pending',
                   },
-                ]
-              );
+                ]);
+
+              if (resvError) throw resvError;
+
+              // 2. Update room status
+              const { error: roomError } = await supabase
+                .from('rooms')
+                .update({ status: 'reserved' })
+                .eq('id', room.id);
+
+              if (roomError) throw roomError;
+
+              // Reload — but don't fail the whole flow if reload hiccups
+              await load().catch(() => {});
+
+              Alert.alert('✅ Reserved!', `Room ${room.number} is now yours.`, [
+                { text: 'OK', onPress: () => navigation.goBack() },
+                {
+                  text: 'View My Room',
+                  onPress: () =>
+                    navigation.navigate('Main', { screen: 'MyRoom' }),
+                },
+              ]);
             } catch (e) {
               Alert.alert('Reservation Failed', e.message);
             }
@@ -101,8 +155,23 @@ export default function RoomDetails({ route, navigation }) {
           onPress: async () => {
             setBusy(true);
             try {
-              await API.cancelReservation(reservation.id);
-              await load();
+              // 1. Update reservation status to cancelled
+              const { error: resvError } = await supabase
+                .from('reservations')
+                .update({ status: 'cancelled' })
+                .eq('id', reservation.id);
+
+              if (resvError) throw resvError;
+
+              // 2. Set room back to available
+              const { error: roomError } = await supabase
+                .from('rooms')
+                .update({ status: 'available' })
+                .eq('id', room.id);
+
+              if (roomError) throw roomError;
+
+              await load().catch(() => {});
               Alert.alert('✅ Cancelled', 'Reservation removed.');
             } catch (e) {
               Alert.alert('Error', e.message);

@@ -8,27 +8,67 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import API from '../api';
+import { supabase } from '../supabase';
+import { useAuth } from '../AuthContext';
 
 export default function RoomList({ navigation }) {
+  const { user } = useAuth();
   const [rooms, setRooms] = useState([]);
   const [reservation, setReservation] = useState(null);
   const [filter, setFilter] = useState('all');
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
+    if (!user) return;
+    
     try {
-      const [r, resv] = await Promise.all([
-        API.getRooms(),
-        API.getCurrentReservation(),
-      ]);
-      setRooms(r);
-      setReservation(resv);
+      // 1. Fetch all rooms from Supabase
+      const { data: roomsData, error: roomsError } = await supabase
+        .from('rooms')
+        .select('*')
+        .order('room_number', { ascending: true });
+
+      if (roomsError) throw roomsError;
+
+      // Map Supabase 'room_number' to 'number' for the existing UI
+      const formattedRooms = roomsData.map((r) => ({
+        ...r,
+        number: r.room_number,
+      }));
+      setRooms(formattedRooms);
+
+      // 2. Fetch the user's active/pending reservation
+      const { data: resvData, error: resvError } = await supabase
+        .from('reservations')
+        .select(`
+          *,
+          room:rooms (*)
+        `)
+        .eq('user_id', user.id)
+        .in('status', ['pending', 'active'])
+        .maybeSingle(); // Expecting 0 or 1 active reservation
+
+      if (resvError) throw resvError;
+
+      // Format reservation to match the UI expectations
+      if (resvData) {
+        setReservation({
+          ...resvData,
+          room: {
+            ...resvData.room,
+            number: resvData.room.room_number,
+          }
+        });
+      } else {
+        setReservation(null);
+      }
+
     } catch (e) {
-      console.warn(e.message);
+      console.warn('RoomList Load Error:', e.message);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
-  }, []);
+  }, [user]);
 
   useFocusEffect(
     useCallback(() => {
@@ -93,7 +133,8 @@ export default function RoomList({ navigation }) {
               <View style={{ flex: 1 }}>
                 <Text style={s.num}>Room {item.number}</Text>
                 <Text style={s.type}>{item.type}</Text>
-                <Text style={s.price}>₱{item.price.toFixed(2)} / day</Text>
+                {/* Use Number() because Supabase returns NUMERIC as a string */}
+                <Text style={s.price}>₱{Number(item.price).toFixed(2)} / day</Text>
                 {isMine && <Text style={s.mineTag}>⭐ Your reservation</Text>}
               </View>
               <View style={[s.badge, badgeColor(item.status)]}>

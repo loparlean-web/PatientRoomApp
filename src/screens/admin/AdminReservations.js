@@ -8,7 +8,7 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import API from '../../api';
+import { supabase } from '../../supabase';
 
 export default function AdminReservations() {
   const [tab, setTab] = useState('active');
@@ -16,21 +16,61 @@ export default function AdminReservations() {
   const [payments, setPayments] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     try {
-      const [r, p] = await Promise.all([
-        API.adminGetReservations(),
-        API.adminGetPayments(),
-      ]);
-      setReservations(r);
-      setPayments(p);
-    } catch (e) {
-      console.warn(e.message);
-    }
-    setLoading(false);
-  };
+      const [resvRes, payRes] = await Promise.all([
+        // Reservations with joined profile + room
+        supabase
+          .from('reservations')
+          .select(`
+            *,
+            profile:profiles (username, full_name),
+            room:rooms (room_number)
+          `)
+          .order('created_at', { ascending: false }),
 
-  useFocusEffect(useCallback(() => { load(); }, []));
+        // Payments with joined profile
+        supabase
+          .from('payments')
+          .select(`
+            *,
+            profile:profiles (username, full_name)
+          `)
+          .order('created_at', { ascending: false }),
+      ]);
+
+      if (resvRes.error) throw resvRes.error;
+      if (payRes.error) throw payRes.error;
+
+      setReservations(
+        (resvRes.data || []).map((r) => ({
+          ...r,
+          user: r.profile?.full_name || r.profile?.username || 'Unknown',
+          room: r.room?.room_number || '?',
+          checkIn: new Date(r.created_at).toLocaleDateString(),
+        }))
+      );
+
+      setPayments(
+        (payRes.data || []).map((p) => ({
+          ...p,
+          userName: p.profile?.full_name || p.profile?.username || 'Unknown',
+          amount: Number(p.amount),
+          timestamp: p.created_at,
+        }))
+      );
+    } catch (e) {
+      console.warn('AdminReservations load:', e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
 
   if (loading) {
     return (
@@ -77,7 +117,9 @@ export default function AdminReservations() {
           renderItem={({ item }) => (
             <View style={s.card}>
               <View style={{ flex: 1 }}>
-                <Text style={s.id}>{item.id}</Text>
+                <Text style={s.id}>
+                  #{item.id.slice(0, 8).toUpperCase()}
+                </Text>
                 <Text style={s.meta}>
                   {tab === 'active'
                     ? `👤 ${item.user} · 🛏️ Room ${item.room}`
@@ -86,13 +128,22 @@ export default function AdminReservations() {
                 <Text style={s.meta}>
                   {tab === 'active'
                     ? `📅 ${item.checkIn}`
-                    : `${item.method} · ${new Date(item.timestamp).toLocaleDateString()}`}
+                    : `${item.method || '—'} · ${new Date(
+                        item.timestamp
+                      ).toLocaleDateString()}`}
                 </Text>
               </View>
               <View style={{ alignItems: 'flex-end' }}>
                 {tab === 'active' ? (
                   <View
-                    style={[s.badge, item.status === 'active' ? s.ok : s.muted]}
+                    style={[
+                      s.badge,
+                      item.status === 'active' || item.status === 'pending'
+                        ? s.ok
+                        : item.status === 'cancelled'
+                        ? s.fail
+                        : s.muted,
+                    ]}
                   >
                     <Text style={s.badgeT}>{item.status.toUpperCase()}</Text>
                   </View>
@@ -102,10 +153,12 @@ export default function AdminReservations() {
                     <View
                       style={[
                         s.badge,
-                        item.status === 'successful' ? s.ok : s.fail,
+                        item.status === 'paid' ? s.ok : s.fail,
                       ]}
                     >
-                      <Text style={s.badgeT}>{item.status.toUpperCase()}</Text>
+                      <Text style={s.badgeT}>
+                        {item.status.toUpperCase()}
+                      </Text>
                     </View>
                   </>
                 )}
@@ -115,7 +168,7 @@ export default function AdminReservations() {
         />
       )}
 
-      <Text style={s.footer}>💾 Data source: local API</Text>
+      <Text style={s.footer}>☁️ Data source: Supabase</Text>
     </View>
   );
 }
@@ -148,7 +201,12 @@ const s = StyleSheet.create({
   },
   id: { fontWeight: '700', fontSize: 12 },
   meta: { color: '#666', fontSize: 12, marginTop: 3 },
-  badge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 10, marginTop: 4 },
+  badge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    marginTop: 4,
+  },
   ok: { backgroundColor: '#d4edda' },
   fail: { backgroundColor: '#f8d7da' },
   muted: { backgroundColor: '#e0e0e0' },
